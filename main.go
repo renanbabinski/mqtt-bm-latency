@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"strconv"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -82,26 +81,28 @@ type JSONResults struct {
 }
 
 func main() {
+	one := 1
+	two := 2
 
 	var (
-		broker      = flag.String("broker", "tcp://localhost:1883", "MQTT broker endpoint as scheme://host:port")
-		topic       = flag.String("topic", "/test", "MQTT topic for outgoing messages")
+		brokerPub   = flag.String("brokerpub", "tcp://localhost:1887", "MQTT broker endpoint as scheme://host:port")
+		brokerSub1  = flag.String("brokersub1", "tcp://localhost:1883", "MQTT broker endpoint as scheme://host:port")
+		brokerSub2  = flag.String("brokersub2", "tcp://localhost:1888", "MQTT broker endpoint as scheme://host:port")
+		topic       = flag.String("topic", "federated/bm", "MQTT topic for outgoing messages")
 		username    = flag.String("username", "", "MQTT username (empty if auth disabled)")
 		password    = flag.String("password", "", "MQTT password (empty if auth disabled)")
 		pubqos      = flag.Int("pubqos", 1, "QoS for published messages")
 		subqos      = flag.Int("subqos", 1, "QoS for subscribed messages")
 		size        = flag.Int("size", 100, "Size of the messages payload (bytes)")
 		count       = flag.Int("count", 100, "Number of messages to send per pubclient")
-		clients     = flag.Int("clients", 10, "Number of clients pair to start")
+		clientsSub  = &two
+		clientsPub  = &one
                 keepalive   = flag.Int("keepalive", 60, "Keep alive period in seconds")
 		format      = flag.String("format", "text", "Output format: text|json")
 		quiet       = flag.Bool("quiet", false, "Suppress logs while running")
 	)
 
 	flag.Parse()
-	if *clients < 1 {
-		log.Fatal("Invlalid arguments")
-	}
 
 	//start subscribe
 
@@ -113,27 +114,37 @@ func main() {
 	if !*quiet {
 		log.Printf("Starting subscribe..\n")
 	}
-	
-	for i := 0; i < *clients; i++ {
-		sub := &SubClient{
-			ID:         i,
-			BrokerURL:  *broker,
-			BrokerUser: *username,
-			BrokerPass: *password,
-			SubTopic:   *topic + "-" + strconv.Itoa(i),
-			SubQoS:     byte(*subqos),
-			KeepAlive:  *keepalive,
-			Quiet:      *quiet,
-		}
-		go sub.run(subResCh, subDone, jobDone)
+
+	sub1 := &SubClient{
+		ID:         1,
+		BrokerURL:  *brokerSub1,
+		BrokerUser: *username,
+		BrokerPass: *password,
+		SubTopic:   *topic,
+		SubQoS:     byte(*subqos),
+		KeepAlive:  *keepalive,
+		Quiet:      *quiet,
 	}
+	go sub1.run(subResCh, subDone, jobDone)
+
+	sub2 := &SubClient{
+		ID:         2,
+		BrokerURL:  *brokerSub2,
+		BrokerUser: *username,
+		BrokerPass: *password,
+		SubTopic:   *topic,
+		SubQoS:     byte(*subqos),
+		KeepAlive:  *keepalive,
+		Quiet:      *quiet,
+	}
+	go sub2.run(subResCh, subDone, jobDone)
 
 	SUBJOBDONE:
 	for {
 		select {
 		case <-subDone:
 			subCnt++
-			if subCnt==*clients {
+			if subCnt==*clientsSub {
 				if !*quiet {
 					log.Printf("all subscribe job done.\n")
 				}
@@ -148,13 +159,13 @@ func main() {
 	}
 	pubResCh := make(chan *PubResults)
 	start := time.Now()
-	for i := 0; i < *clients; i++ {
+	for i := 0; i < *clientsPub; i++ {
 		c := &PubClient{
 			ID:         i,
-			BrokerURL:  *broker,
+			BrokerURL:  *brokerPub,
 			BrokerUser: *username,
 			BrokerPass: *password,
-			PubTopic:   *topic + "-" + strconv.Itoa(i),
+			PubTopic:   *topic,
 			MsgSize:    *size,
 			MsgCount:   *count,
 			PubQoS:     byte(*pubqos),
@@ -165,8 +176,8 @@ func main() {
 	}
 
 	// collect the publish results
-	pubresults := make([]*PubResults, *clients)
-	for i := 0; i < *clients; i++ {
+	pubresults := make([]*PubResults, *clientsPub)
+	for i := 0; i < *clientsPub; i++ {
 		pubresults[i] = <-pubResCh
 	}
 	totalTime := time.Now().Sub(start)
@@ -180,18 +191,18 @@ func main() {
 	}
 
 	// notify subscriber that job done
-	for i := 0; i < *clients; i++ {
+	for i := 0; i < *clientsSub; i++ {
 		jobDone <- true
 	}
 
 	// collect subscribe results
-	subresults := make([]*SubResults, *clients)
-	for i := 0; i < *clients; i++ {
+	subresults := make([]*SubResults, *clientsSub)
+	for i := 0; i < *clientsSub; i++ {
 		subresults[i] = <-subResCh
 	}
 
 	// collect the sub results
-	subtotals := calculateSubscribeResults(subresults,pubresults)
+	subtotals := calculateSubscribeResults(subresults, pubresults[0])
 
 	// print stats
 	printResults(pubresults, pubtotals, subresults, subtotals, *format)
@@ -238,7 +249,7 @@ func calculatePublishResults(pubresults []*PubResults, totalTime time.Duration) 
 	return pubtotals
 }
 
-func calculateSubscribeResults(subresults []*SubResults, pubresults []*PubResults) *TotalSubResults {
+func calculateSubscribeResults(subresults []*SubResults, pubresults *PubResults) *TotalSubResults {
 	subtotals := new(TotalSubResults)
 	fwdLatencyMeans := make([]float64, len(subresults))
 
@@ -255,13 +266,9 @@ func calculateSubscribeResults(subresults []*SubResults, pubresults []*PubResult
 		}
 
 		fwdLatencyMeans[i] = res.FwdLatencyMean
-		for _, pubres := range pubresults {
-			if pubres.ID == res.ID {
-				subtotals.TotalPublished += pubres.Successes
-				res.Published = pubres.Successes
-				res.FwdRatio = float64(res.Received) / float64(pubres.Successes)
-			}
-		}
+		subtotals.TotalPublished += pubresults.Successes
+		res.Published = pubresults.Successes
+		res.FwdRatio = float64(res.Received) / float64(pubresults.Successes)
 	}
 	subtotals.FwdLatencyMeanAvg = stats.StatsMean(fwdLatencyMeans)
 	subtotals.FwdLatencyMeanStd = stats.StatsSampleStandardDeviation(fwdLatencyMeans)
