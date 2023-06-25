@@ -183,7 +183,7 @@ func main() {
 	totalTime := time.Now().Sub(start)
 	pubtotals := calculatePublishResults(pubresults, totalTime)
 
-	for i:=0; i<3; i++ {
+	for i:=0; i<10; i++ {
 		time.Sleep(1*time.Second)
 		if !*quiet {
 			log.Printf("Benchmark will stop after %v seconds.\n", 3-i)
